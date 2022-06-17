@@ -31,20 +31,20 @@ class JsonRpcCommunicator:
             params=(params if params is not None else []),
             id=self.__request_id,
         )
-        post_data = request_data.json()
+        post_data = request_data.dict()
         logger.info(f"Sending request:\n{post_data}")
         self.__request_id += 1
 
         if self.__client_session is not None:
             async with self.__client_session.post(
-                self.__url, data=post_data
+                self.__url, json=post_data
             ) as response:
                 text = await response.text()
                 logger.info(f"Received response:\n{text}")
                 return text
         else:
             async with aiohttp.ClientSession() as session:
-                async with session.post(self.__url, data=post_data) as response:
+                async with session.post(self.__url, json=post_data) as response:
                     text = await response.text()
                     logger.info(f"Received response:\n{text}")
                     return text
