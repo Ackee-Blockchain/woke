@@ -1,9 +1,12 @@
+import logging
+
 import aiohttp
 from aiohttp import ClientSession
 
-from woke.cli.console import console
-
 from .data_model import *
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 class JsonRpcCommunicator:
@@ -29,6 +32,7 @@ class JsonRpcCommunicator:
             id=self.__request_id,
         )
         post_data = request_data.json()
+        logger.info(f"Sending request:\n{post_data}")
         self.__request_id += 1
 
         if self.__client_session is not None:
@@ -36,13 +40,13 @@ class JsonRpcCommunicator:
                 self.__url, data=post_data
             ) as response:
                 text = await response.text()
-                # console.print_json(text)  # TODO
+                logger.info(f"Received response:\n{text}")
                 return text
         else:
             async with aiohttp.ClientSession() as session:
                 async with session.post(self.__url, data=post_data) as response:
                     text = await response.text()
-                    console.print_json(text)  # TODO
+                    logger.info(f"Received response:\n{text}")
                     return text
 
     async def eth_block_number(self) -> int:
