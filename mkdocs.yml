@@ -27,6 +27,11 @@ plugins:
 - mike
 
 markdown_extensions:
+  - def_list
+  - admonition
+  - pymdownx.details
+  - pymdownx.tasklist:
+      custom_checkbox: true
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
