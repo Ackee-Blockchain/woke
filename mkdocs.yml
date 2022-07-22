@@ -11,7 +11,7 @@ theme:
     - navigation.top
 
 nav:
-  - Woke: 'index.md'
+  - Installation: 'index.md'
   - Contributing: 'contributing.md'
   - API reference:
     - api_reference/index.md
