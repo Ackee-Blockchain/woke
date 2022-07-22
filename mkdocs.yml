@@ -30,6 +30,8 @@ plugins:
 markdown_extensions:
   - def_list
   - admonition
+  - toc:
+      permalink: "#"
   - pymdownx.details
   - pymdownx.tasklist:
       custom_checkbox: true
