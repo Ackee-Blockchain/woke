@@ -57,7 +57,7 @@ echo "$stash_id" > .stash-id
 git commit --no-gpg-sign --no-verify -m 'pre-commit hook tmp commit' >/dev/null
 commited=$?
 # stash unstaged changes
-git stash -u -m "$stash_id" -- woke tests docs >/dev/null
+git stash -u -m "$stash_id" -- . >/dev/null
 # restore staged changes
 if [ $commited -eq $ZERO ];
 then
