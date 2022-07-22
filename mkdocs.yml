@@ -13,9 +13,6 @@ theme:
 nav:
   - Installation: 'index.md'
   - Contributing: 'contributing.md'
-  - API reference:
-    - api_reference/index.md
-    - config: api_reference/config.md
 
 plugins:
 - search
