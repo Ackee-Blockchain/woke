@@ -12,6 +12,7 @@ theme:
 
 nav:
   - Installation: 'index.md'
+  - Configuration: 'configuration.md'
   - Contributing: 'contributing.md'
 
 plugins:
