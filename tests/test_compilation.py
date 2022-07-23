@@ -42,7 +42,7 @@ def setup_project(request):
         )
         (PYTEST_BUILD_PATH / "woke_root").mkdir()
         subprocess.run(
-            ["npm", "install"],
+            ["yarn", "install"],
             cwd=PYTEST_BUILD_PATH,
             shell=(platform.system() == "Windows"),
         )
