@@ -138,11 +138,11 @@ class LspCompiler:
 
         self.__ir_reference_resolver = ReferenceResolver()
 
-    async def run(self, config: WokeConfig):
+    async def run(self, config: WokeConfig, perform_files_discovery: bool):
         self.__config = config
         self.__svm = SolcVersionManager(config)
         self.__compiler = SolidityCompiler(config)
-        await self.__compilation_loop()
+        await self.__compilation_loop(perform_files_discovery)
 
     @property
     def output_ready(self) -> asyncio.Event:
@@ -567,19 +567,20 @@ class LspCompiler:
             if files_to_recompile != files_to_compile or full_compile:
                 await self.__compile(files_to_recompile, False)
 
-    async def __compilation_loop(self):
-        # perform Solidity files discovery
-        project_path = self.__config.project_root_path
+    async def __compilation_loop(self, perform_files_discovery: bool):
+        if perform_files_discovery:
+            # perform Solidity files discovery
+            project_path = self.__config.project_root_path
 
-        for file in project_path.rglob("**/*.sol"):
-            if (
-                not ({"node_modules", ".woke-build"} & set(file.parts))
-                and file.is_file()
-            ):
-                self.__discovered_files.add(file.resolve())
+            for file in project_path.rglob("**/*.sol"):
+                if (
+                    not ({"node_modules", ".woke-build"} & set(file.parts))
+                    and file.is_file()
+                ):
+                    self.__discovered_files.add(file.resolve())
 
-        # perform initial compilation
-        await self.__compile(self.__discovered_files)
+            # perform initial compilation
+            await self.__compile(self.__discovered_files)
 
         if self.__file_changes_queue.empty():
             self.output_ready.set()

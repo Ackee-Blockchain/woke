@@ -51,6 +51,7 @@ class TypeHierarchyPrepareParams(TextDocumentPositionParams, WorkDoneProgressPar
 class TypeHierarchyItemData(LspModel):
     ast_node_id: int
     cu_hash: str
+    uri: DocumentUri
 
 
 class TypeHierarchyItem(LspModel):
@@ -195,7 +196,9 @@ async def prepare_type_hierarchy(
                     node.file, node.name_location
                 ),
                 data=TypeHierarchyItemData(
-                    ast_node_id=node.ast_node_id, cu_hash=node.cu_hash.hex()
+                    ast_node_id=node.ast_node_id,
+                    cu_hash=node.cu_hash.hex(),
+                    uri=DocumentUri(path_to_uri(node.file)),
                 ),
             )
         ]
@@ -261,7 +264,9 @@ async def supertypes(
                     node.file, node.name_location
                 ),
                 data=TypeHierarchyItemData(
-                    ast_node_id=node.ast_node_id, cu_hash=node.cu_hash.hex()
+                    ast_node_id=node.ast_node_id,
+                    cu_hash=node.cu_hash.hex(),
+                    uri=DocumentUri(path_to_uri(node.file)),
                 ),
             )
         )
@@ -321,7 +326,9 @@ async def subtypes(
                     node.file, node.name_location
                 ),
                 data=TypeHierarchyItemData(
-                    ast_node_id=node.ast_node_id, cu_hash=node.cu_hash.hex()
+                    ast_node_id=node.ast_node_id,
+                    cu_hash=node.cu_hash.hex(),
+                    uri=DocumentUri(path_to_uri(node.file)),
                 ),
             )
         )

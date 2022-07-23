@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
 if TYPE_CHECKING:
+    from woke.lsp.context import LspContext
     from woke.lsp.server import LspServer
 
 from woke.compile.solc_frontend import SolcOutputError, SolcOutputErrorSeverityEnum
@@ -16,7 +17,6 @@ from woke.lsp.common_structures import (
     Position,
     Range,
 )
-from woke.lsp.context import LspContext
 from woke.lsp.lsp_data_model import LspModel
 from woke.lsp.methods import RequestMethodEnum
 from woke.lsp.utils.uri import path_to_uri
@@ -42,9 +42,8 @@ class PublishDiagnosticsParams(LspModel):
     """
 
 
-async def diagnostics_loop(
-    server: LspServer, context: LspContext, queue: asyncio.Queue
-):
+async def diagnostics_loop(server: LspServer, context: LspContext):
+    queue: asyncio.Queue = context.diagnostics_queue
     while True:
         file, diagnostics = await queue.get()
 

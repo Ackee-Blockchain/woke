@@ -2,7 +2,7 @@ import asyncio
 import logging
 import traceback
 import uuid
-from functools import partial
+from copy import deepcopy
 from pathlib import Path
 from typing import (
     Any,
@@ -101,25 +101,29 @@ from .server_capabilities import (
     ServerCapabilities,
     ServerCapabilitiesWorkspace,
     ServerCapabilitiesWorkspaceFileOperations,
+    WorkspaceFoldersServerCapabilities,
 )
+from .utils import is_relative_to
 from .utils.uri import uri_to_path
 
 logger = logging.getLogger(__name__)
+
+ConfigPath = Tuple[Union[str, int], ...]
 
 
 class LspServer:
     __initialized: bool
     __cli_config: WokeConfig
-    __workspace_config: Optional[WokeConfig]
+    __workspaces: Dict[Path, LspContext]
+    __user_config: Optional[WokeConfig]
+    __main_workspace: Optional[LspContext]
     __workspace_path: Optional[Path]
-    __context: LspContext
     __protocol: RpcProtocol
     __run: bool
     __request_id_counter: int
     __sent_requests: Dict[Union[int, str], asyncio.Event]
     __message_responses: Dict[Union[int, str], ResponseMessage]
     __running_tasks: Set[asyncio.Task]
-    __diagnostics_queue: asyncio.Queue
 
     __method_mapping: Dict[str, Tuple[Callable, Optional[Type[LspModel]]]]
     __notification_mapping: Dict[str, Tuple[Callable, Optional[Type[LspModel]]]]
@@ -130,12 +134,12 @@ class LspServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ):
-        self.__diagnostics_queue = asyncio.Queue()
         self.__initialized = False
         self.__cli_config = config
-        self.__workspace_config = None
+        self.__workspaces = {}
+        self.__user_config = None
+        self.__main_workspace = None
         self.__workspace_path = None
-        self.__context = LspContext(self, self.__diagnostics_queue)
         self.__protocol = RpcProtocol(reader, writer)
         self.__run = True
         self.__request_id_counter = 0
@@ -147,53 +151,41 @@ class LspServer:
             RequestMethodEnum.INITIALIZE: (self._initialize, InitializeParams),
             RequestMethodEnum.SHUTDOWN: (self._shutdown, None),
             RequestMethodEnum.DOCUMENT_LINK: (
-                partial(document_link, self.__context),
+                self._workspace_route,
                 DocumentLinkParams,
             ),
             RequestMethodEnum.PREPARE_TYPE_HIERARCHY: (
-                partial(prepare_type_hierarchy, self.__context),
+                self._workspace_route,
                 TypeHierarchyPrepareParams,
             ),
             RequestMethodEnum.TYPE_HIERARCHY_SUPERTYPES: (
-                partial(supertypes, self.__context),
+                self._workspace_route,
                 TypeHierarchySupertypesParams,
             ),
             RequestMethodEnum.TYPE_HIERARCHY_SUBTYPES: (
-                partial(subtypes, self.__context),
+                self._workspace_route,
                 TypeHierarchySubtypesParams,
             ),
-            RequestMethodEnum.REFERENCES: (
-                partial(references, self.__context),
-                ReferenceParams,
-            ),
+            RequestMethodEnum.REFERENCES: (self._workspace_route, ReferenceParams),
             RequestMethodEnum.DOCUMENT_SYMBOL: (
-                partial(document_symbol, self.__context),
+                self._workspace_route,
                 DocumentSymbolParams,
             ),
-            RequestMethodEnum.DEFINITION: (
-                partial(definition, self.__context),
-                DefinitionParams,
-            ),
+            RequestMethodEnum.DEFINITION: (self._workspace_route, DefinitionParams),
             RequestMethodEnum.TYPE_DEFINITION: (
-                partial(type_definition, self.__context),
+                self._workspace_route,
                 TypeDefinitionParams,
             ),
             RequestMethodEnum.IMPLEMENTATION: (
-                partial(implementation, self.__context),
+                self._workspace_route,
                 ImplementationParams,
             ),
-            RequestMethodEnum.CODE_LENS: (
-                partial(code_lens, self.__context),
-                CodeLensParams,
-            ),
+            RequestMethodEnum.CODE_LENS: (self._workspace_route, CodeLensParams),
             RequestMethodEnum.PREPARE_RENAME: (
-                partial(prepare_rename, self.__context),
+                self._workspace_route,
                 PrepareRenameParams,
             ),
-            RequestMethodEnum.RENAME: (
-                partial(rename, self.__context),
-                RenameParams,
-            ),
+            RequestMethodEnum.RENAME: (self._workspace_route, RenameParams),
         }
 
         self.__notification_mapping = {
@@ -207,19 +199,19 @@ class LspServer:
                 DidOpenTextDocumentParams,
             ),
             RequestMethodEnum.TEXT_DOCUMENT_DID_CHANGE: (
-                self._text_document_did_change,
+                self._workspace_route,
                 DidChangeTextDocumentParams,
             ),
             RequestMethodEnum.TEXT_DOCUMENT_WILL_SAVE: (
-                self._text_document_will_save,
+                self._workspace_route,
                 WillSaveTextDocumentParams,
             ),
             RequestMethodEnum.TEXT_DOCUMENT_DID_SAVE: (
-                self._text_document_did_save,
+                self._workspace_route,
                 DidSaveTextDocumentParams,
             ),
             RequestMethodEnum.TEXT_DOCUMENT_DID_CLOSE: (
-                self._text_document_did_close,
+                self._workspace_route,
                 DidCloseTextDocumentParams,
             ),
             RequestMethodEnum.WORKSPACE_DID_CHANGE_CONFIGURATION: (
@@ -497,7 +489,7 @@ class LspServer:
             if len(params.workspace_folders) != 1:
                 raise LspError(
                     ErrorCodes.RequestFailed,
-                    "Exactly one workspace directory must be provided.",
+                    "Multi-root workspaces are not supported.",
                     InitializeError(retry=False),
                 )
             path = uri_to_path(params.workspace_folders[0].uri).resolve(strict=True)
@@ -506,11 +498,7 @@ class LspServer:
         elif params.root_path is not None:
             path = Path(params.root_path).resolve(strict=True)
         else:
-            raise LspError(
-                ErrorCodes.RequestFailed,
-                "Exactly one workspace directory must be provided.",
-                InitializeError(retry=False),
-            )
+            path = None
 
         self.__initialized = True
         self.__workspace_path = path
@@ -538,11 +526,14 @@ class LspServer:
             references_provider=True,
             document_symbol_provider=True,
             workspace=ServerCapabilitiesWorkspace(
+                workspace_folders=WorkspaceFoldersServerCapabilities(
+                    supported=False,
+                ),
                 file_operations=ServerCapabilitiesWorkspaceFileOperations(
                     did_create=solidity_registration,
                     did_rename=solidity_registration,
                     did_delete=solidity_registration,
-                )
+                ),
             ),
             definition_provider=True,
             type_definition_provider=True,
@@ -571,14 +562,12 @@ class LspServer:
     async def _shutdown(self, params: Any) -> None:
         self.__run = False
 
-    async def _handle_config_change(self, raw_config: dict) -> bool:
-        assert self.__workspace_path is not None
+    async def _parse_config(
+        self, raw_config: dict, workspace_path: Path
+    ) -> Tuple[dict, Set[ConfigPath], Set[ConfigPath]]:
+        removed_options: Set[ConfigPath] = set()
 
-        removed_options: Set[Tuple[Union[str, int], ...]] = set()
-
-        def _normalize_config(
-            config: Union[dict, list], config_path: Tuple[Union[str, int], ...]
-        ):
+        def _normalize_config(config: Union[dict, list], config_path: ConfigPath):
             if isinstance(config, dict):
                 for k in list(config):
                     v = config[k]
@@ -598,12 +587,12 @@ class LspServer:
         _normalize_config(raw_config, tuple())
 
         run = True
-        invalid_options: Set[Tuple[Union[str, int], ...]] = set()
+        invalid_options: Set[ConfigPath] = set()
         while run:
             try:
                 WokeConfig.fromdict(
                     raw_config,
-                    project_root_path=self.__workspace_path,
+                    project_root_path=workspace_path,
                     woke_root_path=self.__cli_config.woke_root_path,
                 )
                 run = False
@@ -630,70 +619,163 @@ class LspServer:
             )
             await self.log_message(message, MessageType.WARNING)
 
-        if self.__workspace_config is None:
-            self.__workspace_config = WokeConfig.fromdict(
-                raw_config,
-                project_root_path=self.__workspace_path,
-                woke_root_path=self.__cli_config.woke_root_path,
-            )
-            return False
-        else:
-            return self.__workspace_config.update(
-                raw_config, invalid_options.union(removed_options)
-            )
+        return raw_config, invalid_options, removed_options
 
-    async def _initialized(self, params: InitializedParams) -> None:
+    async def _create_config(self, workspace_path: Path) -> WokeConfig:
         code_config = await self.get_configuration()
         assert isinstance(code_config, list)
         assert len(code_config) == 1
         assert isinstance(code_config[0], dict)
+        raw_config = code_config[0]
 
-        await self._handle_config_change(code_config[0])
-        assert self.__workspace_config is not None
+        raw_config, _, _ = await self._parse_config(raw_config, workspace_path)
 
-        self.create_task(self.__context.compiler.run(self.__workspace_config))
-        self.create_task(
-            diagnostics_loop(self, self.__context, self.__diagnostics_queue)
+        return WokeConfig.fromdict(
+            raw_config,
+            project_root_path=workspace_path,
+            woke_root_path=self.__cli_config.woke_root_path,
         )
+
+    async def _handle_config_change(self, raw_config: dict) -> None:
+        for context in self.__workspaces.values():
+            raw_config_copy = deepcopy(raw_config)
+            (
+                raw_config_copy,
+                invalid_options,
+                removed_options,
+            ) = await self._parse_config(
+                raw_config_copy, context.config.project_root_path
+            )
+
+            changed = context.config.update(
+                raw_config_copy, invalid_options.union(removed_options)
+            )
+            if changed:
+                await context.compiler.force_recompile()
+
+    async def _initialized(self, params: InitializedParams) -> None:
+        if self.__workspace_path is not None:
+            self.__main_workspace = LspContext(
+                self, await self._create_config(self.__workspace_path)
+            )
+            self.__workspaces[self.__workspace_path] = self.__main_workspace
+            self.__main_workspace.run(True)
 
     async def _workspace_did_change_configuration(
         self, params: DidChangeConfigurationParams
     ) -> None:
         logger.debug(f"Received configuration change: {params}")
         if "woke" in params.settings:
-            changed = await self._handle_config_change(params.settings["woke"])
-            if changed:
-                await self.__context.compiler.force_recompile()
+            await self._handle_config_change(params.settings["woke"])
+
+    async def _workspace_route(self, params: Any) -> Any:
+        if isinstance(
+            params, (TypeHierarchySupertypesParams, TypeHierarchySubtypesParams)
+        ):
+            uri = params.item.data.uri
+        else:
+            uri = params.text_document.uri
+        path = uri_to_path(uri)
+        matching_workspaces = [
+            workspace
+            for workspace in self.__workspaces.values()
+            if is_relative_to(path, workspace.config.project_root_path)
+        ]
+        assert len(matching_workspaces) == 1
+        context = matching_workspaces[0]
+
+        if isinstance(params, DocumentLinkParams):
+            return await document_link(context, params)
+        elif isinstance(params, TypeHierarchyPrepareParams):
+            return await prepare_type_hierarchy(context, params)
+        elif isinstance(params, TypeHierarchySupertypesParams):
+            return await supertypes(context, params)
+        elif isinstance(params, TypeHierarchySubtypesParams):
+            return await subtypes(context, params)
+        elif isinstance(params, ReferenceParams):
+            return await references(context, params)
+        elif isinstance(params, DocumentSymbolParams):
+            return await document_symbol(context, params)
+        elif isinstance(params, DefinitionParams):
+            return await definition(context, params)
+        elif isinstance(params, TypeDefinitionParams):
+            return await type_definition(context, params)
+        elif isinstance(params, ImplementationParams):
+            return await implementation(context, params)
+        elif isinstance(params, CodeLensParams):
+            return await code_lens(context, params)
+        elif isinstance(params, PrepareRenameParams):
+            return await prepare_rename(context, params)
+        elif isinstance(params, RenameParams):
+            return await rename(context, params)
+        elif isinstance(params, DidChangeTextDocumentParams):
+            return await self._text_document_did_change(context, params)
+        elif isinstance(params, WillSaveTextDocumentParams):
+            return await self._text_document_will_save(context, params)
+        elif isinstance(params, DidSaveTextDocumentParams):
+            return await self._text_document_did_save(context, params)
+        elif isinstance(params, DidCloseTextDocumentParams):
+            return await self._text_document_did_close(context, params)
+        else:
+            raise NotImplementedError(f"Unhandled request: {type(params)}")
 
     async def _text_document_did_open(self, params: DidOpenTextDocumentParams) -> None:
-        await self.__context.compiler.add_change(params)
+        path = uri_to_path(params.text_document.uri)
+        matching_workspaces = [
+            workspace
+            for workspace in self.__workspaces.values()
+            if is_relative_to(path, workspace.config.project_root_path)
+        ]
+        assert len(matching_workspaces) <= 1
 
+        if len(matching_workspaces) == 0:
+            context = LspContext(self, await self._create_config(path.parent))
+            self.__workspaces[path.parent] = context
+            context.run(False)
+        else:
+            context = matching_workspaces[0]
+
+        await context.compiler.add_change(params)
+
+    @staticmethod
     async def _text_document_did_change(
-        self, params: DidChangeTextDocumentParams
+        context: LspContext, params: DidChangeTextDocumentParams
     ) -> None:
-        await self.__context.compiler.add_change(params)
+        await context.compiler.add_change(params)
 
+    @staticmethod
     async def _text_document_will_save(
-        self, params: WillSaveTextDocumentParams
+        context: LspContext, params: WillSaveTextDocumentParams
     ) -> None:
         pass
 
-    async def _text_document_did_save(self, params: DidSaveTextDocumentParams) -> None:
+    @staticmethod
+    async def _text_document_did_save(
+        context: LspContext, params: DidSaveTextDocumentParams
+    ) -> None:
         pass
 
     async def _text_document_did_close(
-        self, params: DidCloseTextDocumentParams
+        self, context: LspContext, params: DidCloseTextDocumentParams
     ) -> None:
-        await self.__context.compiler.add_change(params)
+        await context.compiler.add_change(params)
+
+        if context != self.__main_workspace:
+            path = uri_to_path(params.text_document.uri)
+            await context.diagnostics_queue.put((path, set()))
+        # TODO: remove the workspace from the dict of workspaces (if not main workspace and no other files are open)
 
     async def _workspace_did_create_files(self, params: CreateFilesParams) -> None:
-        await self.__context.compiler.add_change(params)
+        assert self.__main_workspace is not None
+        await self.__main_workspace.compiler.add_change(params)
 
     async def _workspace_did_rename_files(self, params: RenameFilesParams) -> None:
-        await self.__context.compiler.add_change(params)
+        assert self.__main_workspace is not None
+        await self.__main_workspace.compiler.add_change(params)
 
     async def _workspace_did_delete_files(self, params: DeleteFilesParams) -> None:
-        await self.__context.compiler.add_change(params)
+        assert self.__main_workspace is not None
+        await self.__main_workspace.compiler.add_change(params)
 
     async def get_configuration(self) -> None:
         params = ConfigurationParams(
