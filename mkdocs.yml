@@ -13,6 +13,7 @@ theme:
 nav:
   - Installation: 'index.md'
   - Configuration: 'configuration.md'
+  - Solc Version Manager: 'solc-version-manager.md'
   - Contributing: 'contributing.md'
 
 plugins:
