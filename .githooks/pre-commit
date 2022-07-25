@@ -107,8 +107,8 @@ if [ ${#pyfiles[@]} -ne 0 ]; then
     check_last_command;
 fi
 
-echo "running mkdocs build"
-mkdocs build
+echo "running \`mkdocs build --strict\`"
+mkdocs build --strict
 check_last_command
 
 echo "/.githooks/pre-commit successfully executed."
