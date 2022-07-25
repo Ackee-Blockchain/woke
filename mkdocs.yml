@@ -17,6 +17,10 @@ nav:
   - Solc Version Manager: 'solc-version-manager.md'
   - Contributing: 'contributing.md'
 
+extra:
+  version:
+    provider: mike
+
 plugins:
 - search
 - mkdocstrings:
